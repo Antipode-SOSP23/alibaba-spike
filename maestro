@@ -311,6 +311,167 @@ def clean__gsd(args):
 
 
 #--------------
+# PLOTS
+#--------------
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from matplotlib.colors import LogNorm
+import matplotlib.ticker as mtick
+from matplotlib.dates import MinuteLocator, DateFormatter
+import matplotlib.gridspec as gridspec
+BASE_FIGSIZE = [6,4]
+BASE_DPI = 600
+BASE_COLOR_PALETTE = sns.color_palette('deep', 12)
+COLORS = {
+  'baseline': BASE_COLOR_PALETTE[0],
+  'oc':       BASE_COLOR_PALETTE[1],
+  'sl': BASE_COLOR_PALETTE[0],
+  'sf': BASE_COLOR_PALETTE[1],
+}
+LABELS = {
+  'sl': 'Stateless',
+  'sf': 'Stateful',
+}
+LTX_SYMBOLS = {
+  # https://matplotlib.org/3.5.0/tutorials/text/mathtext.html
+  'approx' : r'$\approx$',
+}
+PERCENTILES=[0.20, 0.25, 0.30, 0.40, 0.5, 0.60, 0.75, 0.80, 0.90, 0.95, 0.99]
+
+def _save_plot_file(tight=True, tag=None):
+  if tight: plt.tight_layout()
+
+  parts = [
+    inspect.stack()[1][3].split('__')[1], # plot name
+    tag,
+    datetime.now().strftime('%Y%m%d%H%M') # datetime
+  ]
+  plot_filename = '__'.join([x for x in parts if x is not None]) + '.svg'
+  plt.savefig(PLOTS_PATH / plot_filename, bbox_inches = 'tight', pad_inches = 0.1, format='svg', dpi=600)
+
+  print(f"[INFO] Saved plot '{plot_filename}'")
+  plt.clf()
+  plt.close('all')
+
+#--------------
+
+def plot(args):
+  args['stats_data'] = [ _load_yaml(Path(d)) for d in args['stats'] ]
+
+  for plot_name in args['plots']:
+    getattr(sys.modules[__name__], f"plot__{plot_name}")(args)
+  print("[INFO] Plot done!")
+
+def plot__trace_timeline(args):
+  # this plot only accepts one instance of data
+  dataset_name = args['stats'][0]
+  dataset = args['stats_data'][0]
+  df = pd.DataFrame.from_dict(dataset['timeline_per_sec'], orient='index')\
+    .reset_index()\
+    .rename(columns={'index': 'ts', 0: 'num_reqs'})
+
+  # rescale original dataset to datetime starting at midnight
+  midnight = datetime.combine(date.today(), time.min)
+  df['ts'] = df['ts'].map(lambda secs: midnight + timedelta(seconds=secs))
+
+  # Apply theme
+  sns.set_theme(style='ticks')
+  plt.rcParams['figure.dpi'] = BASE_DPI
+  plt.rcParams['figure.figsize'] = [6,6]
+  plt.rcParams['axes.labelsize'] = 'small'
+
+  f = sns.lineplot(data=df, x='ts', y='num_reqs')
+
+  # set axis labels
+  f.set_xlabel('')
+  f.set_ylabel('req/s')
+
+  # remove the day from the xtick and keep only time
+  new_xticks_labels = [ l.get_text().split(' ',1)[1] for l in f.get_xticklabels() ]
+  f.set_xticklabels(labels=new_xticks_labels, rotation=45)
+
+  _save_plot_file()
+
+def plot__cdf_meta_rcptype_unique_services_and_calls(args):
+  # this plot only accepts one instance of data
+  dataset = args['stats_data'][0]
+
+  unique_sf_hist_df = pd.DataFrame.from_dict([ {'count': v, 'meta_rpctype': 'sf'}  for v in _flatten([ e['count'] * [ e['count_bin'] ] for e in dataset['unique_sf_per_trace_hist'] ]) ], orient='columns')
+  unique_sl_hist_df = pd.DataFrame.from_dict([ {'count': v, 'meta_rpctype': 'sl'}  for v in _flatten([ e['count'] * [ e['count_bin'] ] for e in dataset['unique_sl_per_trace_hist'] ]) ], orient='columns')
+
+  calls_unique_by_metarpctype_df = pd.concat([unique_sf_hist_df, unique_sl_hist_df], ignore_index=True)[['count','meta_rpctype']]\
+    .sort_values(by=['meta_rpctype'], ascending=[True])\
+    .reset_index(drop=True)
+
+  sf_hist_df = pd.DataFrame.from_dict([ {'count': v, 'meta_rpctype': 'sf'}  for v in _flatten([ e['count'] * [ e['count_bin'] ] for e in dataset['sf_per_trace_hist'] ]) ], orient='columns')
+  sl_hist_df = pd.DataFrame.from_dict([ {'count': v, 'meta_rpctype': 'sl'}  for v in _flatten([ e['count'] * [ e['count_bin'] ] for e in dataset['sl_per_trace_hist'] ]) ], orient='columns')
+
+  calls_by_metarpctype_df = pd.concat([sf_hist_df, sl_hist_df], ignore_index=True)[['count','meta_rpctype']]\
+    .sort_values(by=['meta_rpctype'], ascending=[True])\
+    .reset_index(drop=True)
+
+  # Apply the default theme
+  print(f"[INFO] Plotting")
+  sns.set_theme(style='ticks')
+  plt.rcParams['figure.dpi'] = BASE_DPI
+  plt.rcParams['figure.figsize'] = [6,1]
+  plt.rcParams['axes.labelsize'] = 'xx-small'
+  plt.rcParams['xtick.labelsize'] = 'xx-small'
+  plt.rcParams['ytick.labelsize'] = 'xx-small'
+  plt.rcParams['legend.fontsize'] = 'xx-small'
+
+  fig,ax = plt.subplots(1,2, gridspec_kw={'wspace':0.1}, sharey=True)
+
+  plot_colors = { k: COLORS[k] for k in COLORS if k in ['sf','sl'] }
+  f0 = sns.ecdfplot(ax=ax[0], data=calls_by_metarpctype_df, x='count', hue='meta_rpctype', log_scale=False, palette=plot_colors, linewidth=1.5)
+  f1 = sns.ecdfplot(ax=ax[1], data=calls_unique_by_metarpctype_df, x='count', hue='meta_rpctype', log_scale=False, palette=plot_colors, linewidth=1.5)
+
+  # limits
+  pp(calls_by_metarpctype_df.quantile(PERCENTILES))
+  pp(calls_unique_by_metarpctype_df.quantile(PERCENTILES))
+  f0_cut_percentile = calls_by_metarpctype_df.quantile(0.95)['count']
+  f1_cut_percentile = calls_unique_by_metarpctype_df.quantile(0.99)['count']
+
+  f0.set_xlim(left=-0.1, right=f0_cut_percentile)
+  f1.set_xlim(left=-0.1, right=f1_cut_percentile)
+
+  # fix number of ticks
+  ax[0].yaxis.set_major_locator(mtick.MultipleLocator(base=0.25))
+  ax[0].xaxis.set_major_locator(mtick.MultipleLocator(base=20.0))
+  ax[1].xaxis.set_major_locator(mtick.MultipleLocator(base=10.0))
+
+  # remove 0 labels
+  ax[0].xaxis.get_major_ticks()[1].label1.set_visible(False)
+  ax[1].xaxis.get_major_ticks()[1].label1.set_visible(False)
+  ax[0].yaxis.get_major_ticks()[1].label1.set_visible(False)
+
+  # set title as label with percentile
+  f0.set_title(f"p95th",loc='left',fontdict={'fontsize': 'xx-small'}, style='italic')
+  f1.set_title(f"p99th",loc='left',fontdict={'fontsize': 'xx-small'}, style='italic')
+
+  # set axis labels
+  f0.set_xlabel('# of Calls per Request')
+  f1.set_xlabel('# of Unique Services per Request')
+  f0.set_ylabel('')
+  f1.set_ylabel('')
+
+  # remove legend from left plot
+  f0.legend_.remove()
+
+  # replace legend labels
+  for legend_label in f1.legend_.get_texts():
+    legend_label.set_text(LABELS[legend_label.get_text()].replace('\n', ' '))
+
+  # remove legend title
+  f1.legend_.set_title(None)
+
+  # move legend to correct spot
+  sns.move_legend(f1, "lower right", bbox_to_anchor=(1.015, 1.0), ncol=2)
+
+  _save_plot_file(tight=False)
+
+#--------------
 # CLI
 #--------------
 PLOTS_AVAILABLE = [m.split('plot__')[1] for m,_ in inspect.getmembers(sys.modules[__name__]) if m.startswith('plot__')]
@@ -350,10 +511,8 @@ if __name__ == '__main__':
 
   # plot stats
   plot_parser = subparsers.add_parser('plot', help='Plot stats')
-  plot_parser.add_argument('-dataset', nargs='+', type=str, required=True)
-  plot_name_group = plot_parser.add_mutually_exclusive_group(required=True)
-  for plot_name in PLOTS_AVAILABLE:
-    plot_name_group.add_argument(f'-{plot_name}', action='store_true')
+  plot_parser.add_argument('-stats', nargs='+', type=str, required=True)
+  plot_parser.add_argument('-plots', nargs='*', choices=PLOTS_AVAILABLE, default=PLOTS_AVAILABLE, required=False, help="Plot only the passed plot names")
 
   # parse args
   args = vars(main_parser.parse_args())

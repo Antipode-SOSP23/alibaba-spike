@@ -38,12 +38,22 @@ Then you can gather the key stats from Alibaba dataset using:
 ```zsh
 ./maestro --gsd stats
 ```
+This command will generate a yml file in the `stats` folder, take note of it to plot later.
 
-With stats in hand you can clean your deployment with:
+Now you can clean your deployment with:
 ```zsh
 ./maestro --gsd clean
 ```
 If you want to stop the cluster use `-stop` and if you want to completely decomission the stack use `-strong`.
+
+## Plots
+
+First, make sure you ran the stats command. Then build all the plots with:
+```zsh
+./maestro --gsd plot -stats STATS_FILE_PATH
+```
+For SOSP'23 only the `cdf_meta_rcptype_unique_services_and_calls` plot was used.
+
 
 
 ## Paper References
