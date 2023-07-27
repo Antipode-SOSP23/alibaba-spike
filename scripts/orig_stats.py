@@ -64,6 +64,19 @@ print(f"[INFO] Current count: {df.count()}")
 stats = dict()
 
 #--------------
+# Timeline
+#--------------
+print("[INFO] Gathering timeline stats ...")
+timeline_df = df.filter(df.rpcid == '0')\
+  .withColumn('timestamp', F.round(F.col('timestamp') / 1000).cast('long'))\
+  .groupBy('timestamp')\
+  .count()\
+  .sort('timestamp')
+
+timeline_per_sec = { r['timestamp'] : int(r['count']) for r in [ row.asDict() for row in timeline_df.collect() ] }
+stats['timeline_per_sec'] = timeline_per_sec
+
+#--------------
 # STATEFULL CHAINS
 #--------------
 def _chain_size(rpcid,rpcids):
