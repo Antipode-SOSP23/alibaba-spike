@@ -1,0 +1,12 @@
+plumbum
+pandas
+requests
+jinja2
+MarkupSafe
+textwrap3
+ruamel.yaml
+pandas
+matplotlib
+seaborn
+argparse
+numpy

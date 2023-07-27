@@ -1,0 +1,41 @@
+nodes:
+  chourico:
+    host: 146.193.41.191
+  salpicao:
+    host: 146.193.41.193
+  moura:
+    host: 146.193.41.195
+  paia:
+    host: 146.193.41.198
+  maranho:
+    host: 146.193.41.201
+  alheira:
+    host: 146.193.41.203
+  farinheira:
+    host: 146.193.41.185
+  morcela:
+    host: 146.193.41.188
+
+hdfs_namenode: farinheira
+
+hdfs_datanodes:
+  - salpicao
+  - moura
+  - paia
+  - maranho
+  - alheira
+  - chourico
+  - morcela
+
+spark_master: farinheira
+
+spark_workers:
+  - salpicao
+  - moura
+  - paia
+  - maranho
+  - alheira
+  - chourico
+  - morcela
+
+jupyter_service: farinheira

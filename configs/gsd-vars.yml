@@ -1,0 +1,44 @@
+---
+default_user: "jfloff"
+default_private_key_file: /home/jfloff/.ssh/id_rsa_inesc_cluster_jfloff
+
+# ==========================================================================================
+# System default
+# ==========================================================================================
+default_home_dir: "/home/{{default_user}}"
+default_install_dir: "{{default_home_dir}}/pluribus_alibaba_analysis"
+asdf_version: v0.10.2
+java_version: zulu-8.64.0.19
+java_home: "{{default_home_dir}}/.asdf/installs/java/{{java_version}}"
+# python install must match the pyspark build
+python_version: 3.7.0
+
+# ssh conf
+key_name: id_ssh_rsa_hadoop_cluster
+key_path: "{{default_install_dir}}"
+
+# hadoop confs
+hadoop_version: 3.3.4
+hadoop_version_sha256: 6a483d1a0b123490ebd8df3f71b64eb39f333f78b95f090aeb58e433cbc2416d
+hadoop_hdfs_data_dir: "{{ default_install_dir }}/hadoop_hdfs_data"
+hadoop_namenode_dir: "{{ default_install_dir }}/hadoop_namenode"
+hadoop_pid_dir: "{{ default_install_dir }}/hadoop_pid"
+hadoop_temp_dir: "{{ default_install_dir }}/hadoop_temp"
+hadoop_conf_dir: "{{ default_install_dir }}/hadoop-{{hadoop_version}}/etc/hadoop"
+hadoop_home_dir: "{{ default_install_dir }}/hadoop-{{hadoop_version}}"
+hadoop_namenode_port: 9000
+hadoop_replication: 3
+
+# spark confs
+spark_version: 3.3.1
+spark_version_sha256: 306b550f42ce1b06772d6084c545ef8448414f2bf451e0b1175405488f2a322f
+spark_home_dir: "{{default_install_dir}}/spark-{{spark_version}}-bin-hadoop3"
+spark_conf_dir: "{{spark_home_dir}}/conf"
+spark_master_port: 7077
+spark_driver_memory: 25g
+spark_driver_max_result_size: 5MB
+spark_local_dirs: "{{default_install_dir}}/spark_tmp"
+
+# jupyter
+jupyter_data_dir: "{{ default_install_dir }}/jupyter_notebooks"
+jupyter_port: 7777

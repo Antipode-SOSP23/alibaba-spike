@@ -1,0 +1,3 @@
+[submodule "spark-hdfs-deploy"]
+	path = spark-hdfs-deploy
+	url = https://github.com/danielporto/provision-hadoop-spark-jupyter-stack

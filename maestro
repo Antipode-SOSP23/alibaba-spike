@@ -1,0 +1,370 @@
+#!/usr/bin/env python3
+
+from pathlib import Path
+from pprint import pprint as pp
+from plumbum import local, path, FG
+import os
+import sys
+import argparse
+import time
+import inspect
+from datetime import date, datetime, time, timedelta
+from time import sleep as tsleep
+
+#--------------
+# HELPERS
+#--------------
+def _load_yaml(path):
+  import ruamel.yaml
+  from jinja2 import Template
+
+  with open(path, 'r') as f:
+    yaml = ruamel.yaml.YAML()
+    yaml.preserve_quotes = True
+    data = yaml.load(f) or {}
+
+    # hack to evaluate jinja2 variables
+    for k, v in data.items():
+      if isinstance(v, str) and '{{' in v:
+        t = Template(v)
+        data[k] = t.render(**data)
+
+    return data
+
+def _dump_yaml(path, d):
+  from ruamel.yaml import YAML
+  yaml=YAML()
+  path.parent.mkdir(exist_ok=True, parents=True)
+  with open(path, 'w+') as f:
+    yaml.default_flow_style = False
+    yaml.dump(d, f)
+
+def _put_last(deploy_type,k,v):
+  doc = {}
+  # if file exists parse yaml otherwise create empty dict to write to
+  if Path(LAST_DEPLOY_FILE[deploy_type]).exists():
+    doc = _load_yaml(LAST_DEPLOY_FILE[deploy_type])
+  # write new value and save to file
+  doc[k] = v
+  # create path dirs if needed
+  _dump_yaml(LAST_DEPLOY_FILE[deploy_type],doc)
+
+def _get_last(deploy_type,k):
+  # if file does not exist create empty dict to write to
+  if Path(LAST_DEPLOY_FILE[deploy_type]).exists():
+    doc = _load_yaml(LAST_DEPLOY_FILE[deploy_type])
+  else:
+    # create file with default entries
+    doc = {
+    }
+    _dump_yaml(LAST_DEPLOY_FILE[deploy_type],doc)
+
+  # default last files entries
+  return doc.get(k)
+
+def _wait_url_up(url):
+  import urllib.request
+  while True:
+    try:
+      return_code = urllib.request.urlopen(url).getcode()
+      if return_code == 200:
+        return
+    except (urllib.error.URLError, ConnectionResetError) as e:
+      pass
+
+# Services available:
+#   hdfs_namenode
+#   spark_master
+#   jupyter_service
+def _service_ip(deploy_type, service):
+  inventory = _load_yaml(_get_last(args['deploy_type'],'inventory'))
+  return inventory['nodes'][inventory[service]]['host']
+
+def _copy_file_to_remote(remote, fro_path, to_path):
+  from plumbum import local, path
+
+  # make sure remote folder exist
+  r_mkdir = remote['mkdir']
+  r_mkdir['-p', str(to_path.parent)]()
+  # copy files
+  fro = local.path(fro_path)
+  to = remote.path(to_path)
+  path.utils.copy(fro, to)
+
+def _flatten(l):
+  out = []
+  for sublist in l:
+    out.extend(sublist)
+  return out
+
+#--------------
+# CONSTANTS
+#--------------
+PROJECT_NAME = 'alibaba-spike'
+SCRIPT_NAME = __file__.rsplit("/", 1)[1].split('.')[0]
+ROOT_PATH = Path(os.path.abspath(os.path.dirname(sys.argv[0])))
+DEPLOY_TYPES = [ 'gsd' ]
+SPARK_DEPLOY_REPO_PATH = ROOT_PATH / 'spark-hdfs-deploy'
+DEPLOY_PATH = ROOT_PATH / 'deploy'
+SCRIPTS_PATH = ROOT_PATH / 'scripts'
+STATS_PATH = ROOT_PATH / 'stats'
+PLOTS_PATH = ROOT_PATH / 'plots'
+HADOOP_DATASET_PATH = Path('hdfs:///dataset')
+LAST_DEPLOY_FILE = { dp : DEPLOY_PATH / dp / f".last.yml" for dp in DEPLOY_TYPES }
+YCSB_PROTOCOLS = [ 'Eventual', 'COPS', 'GentleRain' ]
+
+#--------------
+# DEPLOY
+#--------------
+def deploy(args):
+  if not args['tag']:
+    args['tag'] = f"{datetime.now().strftime('%Y%m%d%H%M')}"
+
+  # make deploy path
+  # save build variables for other commands
+  _put_last(args['deploy_type'], 'inventory', args['inventory'])
+  _put_last(args['deploy_type'], 'vars', args['vars'])
+  _put_last(args['deploy_type'], 'tag', args['tag'])
+
+  args['deploy_dir'] = DEPLOY_PATH / args['deploy_type'] / args['tag']
+
+  getattr(sys.modules[__name__], f"deploy__{args['deploy_type']}")(args)
+  print("[INFO] Deploy done!")
+
+def deploy__gsd(args):
+  import shutil
+  from jinja2 import Environment
+  import textwrap
+  from plumbum.cmd import ansible_playbook
+
+  deploy_dir = args['deploy_dir']
+  inventory = _load_yaml(args['inventory'])
+  deploy_vars = _load_yaml(args['vars'])
+
+  print(f"[INFO] Copying deploy files... ", flush=True)
+  os.makedirs(deploy_dir, exist_ok=True)
+  shutil.copytree(SPARK_DEPLOY_REPO_PATH, deploy_dir, dirs_exist_ok=True)
+  shutil.copy(args['vars'], deploy_dir / 'vars.yaml')
+
+  print(f"[INFO] Generating inventory... ", flush=True)
+  template = """
+    [nodes]
+    {% for hostname,node in nodes.items() %}{{ hostname }} ansible_host={{ node['host'] }} ansible_user="{{ user }}" ansible_ssh_private_key_file="{{ ssh_private_key_file }}"
+    {% endfor %}
+
+    [hdfs_namenode]
+    {{ hdfs_namenode }}
+
+    [hdfs_datanodes]
+    {% for node in hdfs_datanodes %}{{ node }}
+    {% endfor %}
+
+    [spark_master]
+    {{ spark_master }}
+
+    [spark_workers]
+    {% for node in spark_workers %}{{ node }}
+    {% endfor %}
+
+    [jupyter_service]
+    {{ jupyter_service }}
+  """
+  template_render = Environment().from_string(template).render({
+    'ssh_user': deploy_vars['default_user'],
+    'ssh_private_key_file': deploy_vars['default_private_key_file'],
+    #
+    'nodes': inventory['nodes'],
+    'hdfs_namenode': inventory['hdfs_namenode'],
+    'hdfs_datanodes': inventory['hdfs_datanodes'],
+    'spark_master': inventory['spark_master'],
+    'spark_workers': inventory['spark_workers'],
+    'jupyter_service': inventory['jupyter_service'],
+  })
+  inventory_filepath = deploy_dir / 'inventory.ini'
+  with open(inventory_filepath, 'w') as f:
+    # remove empty lines and dedent for easier read
+    f.write(textwrap.dedent(template_render))
+  print(f"[SAVED] '{inventory_filepath}'")
+
+  if args['provision']:
+    print(f"[INFO] Provision Spark + Hadoop stack... ", flush=True)
+    with local.cwd(deploy_dir):
+      ansible_playbook['stack-provision.yml'] & FG
+
+  print(f"[INFO] Start Spark + Hadoop stack... ", flush=True)
+  with local.cwd(deploy_dir):
+    ansible_playbook['stack-start.yml'] & FG
+
+  _wait_url_up(f"http://{_service_ip(args['deploy_type'],'spark_master')}:8080")
+  _wait_url_up(f"http://{_service_ip(args['deploy_type'],'hdfs_namenode')}:9870")
+
+
+#--------------
+# INFO
+#--------------
+def info(args):
+  args['tag'] = _get_last(args['deploy_type'], 'tag')
+  args['inventory'] = _load_yaml(_get_last(args['deploy_type'],'inventory'))
+  args['vars'] = _load_yaml(_get_last(args['deploy_type'],'vars'))
+  args['deploy_dir'] = DEPLOY_PATH / args['deploy_type'] / args['tag']
+
+  getattr(sys.modules[__name__], f"info__{args['deploy_type']}")(args)
+
+def info__gsd(args):
+  spark_master = _service_ip(args['deploy_type'], 'spark_master')
+  hdfs_namenode = _service_ip(args['deploy_type'], 'spark_master')
+  jupyter_service = _service_ip(args['deploy_type'], 'spark_master')
+
+  print(f"\tSpark: http://{spark_master}:8080")
+  print(f"\tSpark Resource Manager: http://{spark_master}:8088/cluster")
+  print(f"\tHadoop Cluster Overview: http://{hdfs_namenode}:9870/dfshealth.html#tab-overview")
+  print(f"\tHDFS Folder: http://{hdfs_namenode}:9870/explorer.html#/dataset")
+  print(f"\tJupyter: http://{jupyter_service}:7777")
+
+
+#--------------
+# STATS
+#--------------
+def stats(args):
+  args['tag'] = _get_last(args['deploy_type'], 'tag')
+  args['deploy_dir'] = DEPLOY_PATH / args['deploy_type'] / args['tag']
+  args['inventory'] = _load_yaml(_get_last(args['deploy_type'],'inventory'))
+  args['vars'] = _load_yaml(_get_last(args['deploy_type'],'vars'))
+  args['app_name'] = f"{args['tag']}-stats--{'sample' if args['sample'] else ''}"
+
+  getattr(sys.modules[__name__], f"stats__{args['deploy_type']}")(args)
+  print("[INFO] Stats done!")
+
+def stats__gsd(args):
+  from plumbum import SshMachine
+  from plumbum.cmd import grep, cut
+
+  print("[INFO] Connecting to master...")
+  spark_master_host = _service_ip(args['deploy_type'], 'spark_master')
+  remote = SshMachine(spark_master_host,
+    ssh_opts=['-o ServerAliveInterval=9999'],
+    user=args['vars']['default_user'],
+    keyfile=args['vars']['default_private_key_file'])
+
+  print("[INFO] Copying script file...")
+  fro_path = SCRIPTS_PATH / args['script'].name
+  to_path = Path(args['vars']['default_install_dir']) / 'scripts' / args['script'].name
+  _copy_file_to_remote(remote, fro_path, to_path)
+
+  print("[INFO] Submitting script file to Spark...")
+  spark_master = f"spark://{spark_master_host}:7077"
+
+  dataset = HADOOP_DATASET_PATH
+  if args['sample']:
+    # use first csv as sample
+    dataset = dataset / 'MSCallGraph_0.csv'
+
+  with remote.env(PATH=remote.expand('$HOME/.asdf/bin:$HOME/.asdf/shims:$PATH')):
+    r_spark_submit = remote[str(Path(args['vars']['spark_home_dir']) / 'bin' / 'spark-submit')]
+
+    r_spark_submit[
+      '--master', spark_master,
+      '-c', 'spark.ui.showConsoleProgress=true',
+      # '-c', 'spark.sql.shuffle.partitions=100',
+      '--executor-memory', '100g',
+      str(to_path),
+      spark_master,
+      args['app_name'],
+      dataset,
+    ] & FG
+
+  # merge all files into one
+  print(f"[INFO] Finished spark submit!")
+
+  # copy remote stats file to local
+  print(f"[INFO] Copy stats file...")
+  fro_path = Path(f"/tmp/{args['app_name']}.yml")
+  to_path = STATS_PATH / fro_path.name
+  path.utils.copy(remote.path(fro_path), local.path(to_path))
+
+
+#--------------
+# CLEAN
+#--------------
+def clean(args):
+  args['tag'] = _get_last(args['deploy_type'], 'tag')
+  args['deploy_dir'] = DEPLOY_PATH / args['deploy_type'] / args['tag']
+
+  getattr(sys.modules[__name__], f"clean__{args['deploy_type']}")(args)
+  print("[INFO] Clean done!")
+
+def clean__gsd(args):
+  from plumbum.cmd import ansible_playbook
+
+  print(f"[INFO] Cleaning ... ", flush=True)
+  with local.cwd(args['deploy_dir']):
+    ansible_playbook['playbook-clean-caches.yml'] & FG
+    if args['rebalance']:
+      print(f"[INFO] Rebalancing HDFS... ", flush=True)
+      ansible_playbook['playbook-hdfs-rebalance.yml'] & FG
+    if args['stop']:
+      print(f"[INFO] Stopping stack... ", flush=True)
+      ansible_playbook['stack-stop.yml'] & FG
+    if args['strong']:
+      print(f"[INFO] Decommissioning stack... ", flush=True)
+      ansible_playbook['stack-decomission.yml'] & FG
+
+
+#--------------
+# CLI
+#--------------
+PLOTS_AVAILABLE = [m.split('plot__')[1] for m,_ in inspect.getmembers(sys.modules[__name__]) if m.startswith('plot__')]
+SHRINK_STRATEGIES_AVAILABLE = [m.split('__')[2] for m,_ in inspect.getmembers(sys.modules[__name__]) if m.startswith('shrink__')]
+if __name__ == '__main__':
+  # parse arguments
+  main_parser = argparse.ArgumentParser()
+
+  # deploy flag
+  deploy_type_group = main_parser.add_mutually_exclusive_group(required=True)
+  for dt in DEPLOY_TYPES:
+    deploy_type_group.add_argument(f"--{dt}", action='store_true')
+
+  # different commands
+  subparsers = main_parser.add_subparsers(help='commands', dest='which')
+
+  # deploy
+  deploy_parser = subparsers.add_parser('deploy', help='Deploy application')
+  deploy_parser.add_argument('-inventory', required=True, help="Inventory configuration")
+  deploy_parser.add_argument('-vars', required=True, help="Deploy vars")
+  deploy_parser.add_argument('-provision', action='store_true', help="By default we do not provision the stack")
+  deploy_parser.add_argument('-tag', required=False, help="Deploy with already existing tag")
+
+  # info
+  info_parser = subparsers.add_parser('info', help='Application info')
+
+  # stats
+  stats_parser = subparsers.add_parser('stats', help='Gather stats over dataset')
+  stats_parser.add_argument('-script', type=Path, required=False, default=SCRIPTS_PATH / 'orig_stats.py')
+  stats_parser.add_argument('-sample', action='store_true')
+
+  # clean
+  clean_parser = subparsers.add_parser('clean', help='Clean application')
+  clean_parser.add_argument('-rebalance', action='store_true', help="Rebalance dfs")
+  clean_parser.add_argument('-stop', action='store_true', help="Stop stack")
+  clean_parser.add_argument('-strong', action='store_true', help="Decomission stack")
+
+  # plot stats
+  plot_parser = subparsers.add_parser('plot', help='Plot stats')
+  plot_parser.add_argument('-dataset', nargs='+', type=str, required=True)
+  plot_name_group = plot_parser.add_mutually_exclusive_group(required=True)
+  for plot_name in PLOTS_AVAILABLE:
+    plot_name_group.add_argument(f'-{plot_name}', action='store_true')
+
+  # parse args
+  args = vars(main_parser.parse_args())
+  command = args.pop('which').replace('-', '_')
+
+  # parse deploy type
+  args['deploy_type'] = None
+  for dt in DEPLOY_TYPES:
+    if args[dt]:
+      args['deploy_type'] = dt
+    del args[dt]
+
+  # call parser method dynamically
+  getattr(sys.modules[__name__], command)(args)

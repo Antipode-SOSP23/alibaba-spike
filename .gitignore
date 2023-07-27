@@ -1,0 +1,10 @@
+.last.yml
+
+deploy/*
+!deploy/.keep
+
+stats/*
+!stats/.keep
+
+plots/*
+!plots/.keep
