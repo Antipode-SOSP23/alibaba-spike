@@ -230,7 +230,7 @@ def stats(args):
   args['deploy_dir'] = DEPLOY_PATH / args['deploy_type'] / args['tag']
   args['inventory'] = _load_yaml(_get_last(args['deploy_type'],'inventory'))
   args['vars'] = _load_yaml(_get_last(args['deploy_type'],'vars'))
-  args['app_name'] = f"{args['tag']}-stats--{'sample' if args['sample'] else ''}"
+  args['app_name'] = f"{args['tag']}-stats{'--sample' if args['sample'] else ''}"
 
   getattr(sys.modules[__name__], f"stats__{args['deploy_type']}")(args)
   print("[INFO] Stats done!")
