@@ -60,8 +60,8 @@ For SOSP'23 only the `cdf_meta_rcptype_unique_services_and_calls` plot was used.
 
 João Loff, Daniel Porto, João Garcia, Jonathan Mace, Rodrigo Rodrigues\
 Antipode: Enforcing Cross-Service Causal Consistency in Distributed Applications\
-To appear.\
-[Download]()
+SOSP 2023.\
+[Paper](https://dl.acm.org/doi/10.1145/3600006.3613176)
 
 
 Shutian Luo, Huanle Xu, Chengzhi Lu, Kejiang Ye, Guoyao Xu, Liping Zhang, Yu Ding, Jian He, Chengzhong Xu\
